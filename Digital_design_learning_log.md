@@ -252,3 +252,313 @@ And I also noticed that the synthesis or PnR reorganised the scan chain for the 
 
 ![The scan chain simulation after layout](./img/post_layout_simulation_with_timing_annotation.png)
 
+
+
+## 22 July 2024
+
+Managed to log into XFAB portal to access the IP.
+
+Simply click on Design-Compilers & Webtools to access memory IPs.
+
+![RAM/ROM IP access and configure page](./img/ROM_IP_access_my_XFAB.png)
+
+
+Then click on the "play" button, it should direct you to the frontend compiler page, where you should see the configuration page for this IP.
+
+![XFAB frontend memory compiler page](./img/XFAB_front_end_memory_compiler_page.png)
+
+
+Then you will be able to download the needed files attached to this IP for implementation.
+
+![Downloaded tarball file containing all the needed information for the IP](./img/downloaded_IP_ROM_index_memory.png)
+
+
+### XROMLP_128X8_M16P_INDEX_MEM
+
+This is the ROM IP generated from the compiler.
+
+I should now do some simulation to check up the timing information for this IP.
+
+This memory block has the following ports:
+
++ CLK 
++ CEn, active low enable signal
++ A, 7 bit address
++ Q, 8 bit data output
++ RDY, data ready signal 
+
+It needs to be mentioned that the active low enable signal should be asserted together with address information.
+
+Also because the minimum WORD count for the ROM should be 128, so the address has been set as 7 bit, but originally in my design, I only need 41 entries. So I could not ask for a 64-entry ROM.
+
+Will try to load up the ROM with programe file and then check up the ports behaviours.
+
+According to the included timing information, the min cycle time (clock period) at slow condition (125 C 1.62V) is **6.33 ns**, this means the ROM cannot operate at more than **158 MHz**.
+
+![XROM IP simulation results](./img/XH018_LPMOS_ROM_IP_simulation.png)
+
+It can be seen that the address was read on 530,000 ps, and the data was updated at 536,110 ps.
+
+This has a delay of about 6,110 ps or 6.11 ns, which has been listed in the timing table at the worst case scenario with the PVT condition of 1.62V, 175 C.
+
+
+## 23 July 2024
+
+Trying to simulate my old project with the memory files included, but apprently, you cannot include memory files like additional library files.
+
+So absolute path needs to be provided instead of a single file name.
+
+I have already generated ROM IP for index memory and csc weight memory, now I should check RAM IP for my voltage memory, which should be a single clock RAM.
+
+Ok I will now generate all the necessary IPs I needed for my old project
+
+Apparently there are following memories that need IPs support:
+
+ROM:
+
++ offset_mem, 128X10 XROMLP
++ weight_mem, 16384X18 XROMLP
++ CSC_weight_mem, 256X13 XROMLP
++ index_mem, 128X8 XROMLP
+
+
+RAM:
+
++ double_input_voltage_mem, 2* 64X16 XSPRAMLP <==> 64X32 SPRAM 
++ voltage_mem, 64X16 XSPRAMLP
++ input_value_mem, 1024X8 XDPRRAMLP
+
+
+But actually my input_value_memory does not require read and write at the same time, it should be able to be built upon a single port RAM instead.
+
+I will now generate another XSPRAMLP for input_value_mem
+
+Think DPRAM should be built for the application of FIFO.
+
+
+
+## 24 July 2024
+
+I have finished encapsulation of the offset memory module with XROMLP IP.
+
+
+I can probably do CSR weight memory next.
+
+
+
+
+Now that the CSR weight memory has also been modified, I will move on to CSC weight memory module.
+
+Test and simulation should be done later.
+
+CSC weight memory also modified!
+
+
+
+
+Now I will move on to index memory.
+
+As for this one, I need two IP blocks because I need the data on the appointed address and the next one.
+
+Index memory modificatino finished!
+
+
+Now I shall move on to the RAM encapsulation.
+
+Coming up first should be double input voltage memory module.
+
+
+
+Input value memory has now also been updated successfully.
+
+
+I can now probably do a simple simulation with the IP encasulated design.
+
+
+The simulation did not work, I will have to debug the design.
+
+first of all, it seems the RAM has never been properly written, so I will need to do some test on the RAM.
+
+And as for ROM, the data was never properly read because of the time it needs to process the request.
+
+
+Changed the clock frequency to 50 MHz, and it turns out that the read timing for ROM is:
+
+1 clock posedge --> address
+2 clock posedge --> data out (address cannot be changed during this period)
+
+So if I am considering making the behaviour correct, I will have to change everything.
+
+I should just go ahead to the next step with synthesis and place and route.
+
+
+## 25 July 2024
+
+I shall go ahead with the whole digital implemntation flow with what I already have to make a proper **CHIP**
+
+First I shall make a wrapper on top of the whole design, but this should probably be waited after synthesis and scan path inserted.
+
+
+### Synthesis
+
+#### Memory initialisation complaint
+
+At first, it was complaining about the memory initialisation where only 2 dimensional memory array is allowed to be initilaised with readmem keyword.
+
+So I removed the initialisation block by defining the block to be only available when macro **SIM** is defined.
+
+
+#### Illegal positional port association CDFG-817
+
+And then I was reported with illegal positional port association with power and ground pins during elaboration.
+
+```text
+Error   : Illegal positional port association for instantiation of cell with power and ground pins. [CDFG-817] [elaborate]
+        : Instantiation of cell 'XROMLP_128X10_M16P_OFFSET_MEM' has positional instantiation..
+        : Only named port association is allowed for instantiations of cells with power and ground pins.
+
+```
+
+At first I thought this is because the problematic definition of the verilog files from IPs.
+
+So I removed them from the RTL folder, which did not help.
+
+
+I am then assuming this is becasuse the instantiation did not have the original port delcared while connecting the module to wires. 
+
+So I only changed offset memory to see if I am right about this.
+
+The experiment shows that the error messages previously reported about offset memory has been eliminated.
+
+And it has reported a new error about XSPRAMLP now.
+
+All I have to do is to change the instantiation from:
+
+
+```verilog
+// IP instantiation
+
+XROMLP_256X13_M16P_CSC_WEIGHT Internal_XROMLP_256X13_IP_inst (internal_data_out, addr, clk, 1'b0, ready_signal);
+```
+
+to the following with clear port declaration:
+
+
+```verilog
+// IP instantiation
+
+XROMLP_256X13_M16P_CSC_WEIGHT Internal_XROMLP_256X13_IP_inst (.Q(internal_data_out), .A(addr), .CLK(clk), .CEn(1'b0), .RDY(ready_signal));
+
+```
+
+#### Important warnings about ports connection CDFG-467 CDFG-466
+
+Elabortion passed!!!!!
+
+
+But it is reporting some other undriven ports issues, I will have a close look.
+
+First reported undriven issue is about the input value memory
+
+```text
+Warning : Libpin is wider than connected signal. [CDFG-467]
+        : Signal width (1) does not match width of input port 'A' (10) of instance 'Internal_XSPRAMLP_1024X8_IP_inst' of libcell 'XSPRAMLP_1024X8_M8P_INPUT_VALUE' in file '/home/j05003sx/Old_proj/bin_ratio_ensemble_SNN_hardware/Syn/../RTL/input_value_mem_1024X8_XSPRAMLP.v' on line 15.
+        : This may cause simulation mismatches between the original and synthesized designs.
+```
+
+And then I realised that my definition of wire **addr_to_RAM** is a single wire as in "wire addr_to_RAM" instead of "wire \[9:0\] addr_to_RAM".
+
+
+Then similar warnings were reported about index memory.
+
+And then it is reporting that one port is wider than expected.
+
+that is for the input address of end RAM.
+
+```text
+Warning : Connected signal is wider than libpin. [CDFG-466]
+        : Signal width (32) does not match width of input port 'A' (7) of instance 'Internal_XROMLP_128X8_IP_inst_end' of libcell 'XROMLP_128X8_M16P_INDEX_MEM' in file '/home/j05003sx/Old_proj/bin_ratio_ensemble_SNN_hardware/Syn/../RTL/index_mem_128X8_XROMLP.v' on line 19.
+```
+
+and apparently, this is due to the fact that the connection was defined as:
+
+```verilog
+XROMLP_128X8_M16P_INDEX_MEM Internal_XROMLP_128X8_IP_inst_end (.Q(end_index), .A(neuron_index+1), .CLK(clk), .CEn(1'b0), .RDY(ready_signal_2));
+```
+
+The port definition **neuron_index+1** will automatically expand the width for a 6 bits adress to 32 bits.
+
+This has been fixed!!!
+
+Ralised that I forgot to insert scan path.....
+
+I will leave that to next time.
+
+
+### Place and Route
+
+Now starting the PnR process, I have written an io pads verilog file to wrap the core design inside to make a chip.
+
+After sorting out all the errors in my verilog files and LEF files, the whole chip design is displayed with design guide and IP blocks.
+
+![Imported Chip layout of design guide and IP on display](./img/imported_layout_of_design_guide_and_IPblocks.gif)
+
+Just realised that I am using pad limited IO pads instead of core limited IO pads for this layout....
+
+I prbably need to make another IO pads definition....
+
+I will save the design for now and come back tomorrow for the fix of floor plan and IO pads...
+
+
+
+## 26 July 2024
+
+Since I realised that I have used the wrong pin pads for the design... I should probably also redo synthesis, because the driving cells have changed and this needs to be reflected on the constraint file.
+
+I can also plug in reset synchronisation and scan path this time.
+
+IO_CELLS_3V: pad-limited design
+
+IO_CELLS_F3V: core-limited design 
+
+So I should use library **IO_CELLS_F3V** and as for cells, the input cells should be ICF and output cells should be BT1F
+
+
+Also the corner cells could be CORNERF, CORNERSF or CORNERLF CORNERESDF.
+
++ CORNERF: Corner cell with standard cell height, valid for a very small chip with EXTENT area size < 1mm^2.
++ CORNERSF: Corner cell, valid for a small chip with 1mm^2 <= EXTENT area size < 100mm^2.
++ CORNERLF: Corner cell, valid for a large chip with EXTENT area size >= 100mm^2.
++ CORNERESDF: Corner cell with ESD protection structure with standard cell height, valid for a very small chip with EXTENT area size < 1mm^2.
+
+Guess I can check roughly the size of the chip layout from yesterday and descide which cell I should use.
+
+After checking the layout I imported yesterday, the overall core gives 2.072 X 2.059 = 4.266 mm^2, which suggests I should use **CORNERSF**.
+
+
+As for power cells, I used to use 
+
+VDDORPADP, GNDORPADP and VDDPADP respectively for 3.3 V, ground and core VDD (1.8V).
+
+Now they should be replaced with:
+
+VDDORPADF, GNDORPADF and VDDPADF.
+
+
+### Synthesis
+
+Make a new folder as Syn_DFT and redo all the steps needed.
+
+The tool is reporting that the newly added port SE does not have external driver/transitions, I guess I dot not have to do anything about it.
+
+
+### Equivalence check
+
+I noticed that some inputs are removed during synthesis, and I wonder if this would cause inconsistency.
+
+I shall now run a consistency check using LEC.
+
+So you can add the liberty file into the library separately using -append option.
+
+The tool apparently is complaining there is nonequivalence between our golden design and synthesized design.
+
