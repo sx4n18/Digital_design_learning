@@ -562,3 +562,159 @@ So you can add the liberty file into the library separately using -append option
 
 The tool apparently is complaining there is nonequivalence between our golden design and synthesized design.
 
+
+
+## 29 July 2024
+
+I will ignore the inconsistency during the consistency check for now and move on to the place and route.
+
+A systematic tutorial on LEC will be arranged for future use.
+
+
+### Place and Route
+
+Modified IO pads module to add extra 3 pads for scan path, shift enable and such.
+
+Also added reset synchronisation in the top Chip wrapper.
+
+
+## 30 July 2024
+
+Now I am just organising the floor plan before power routing and placement.
+
+After some rearranging I gave up the idea of ungroup the design too much, simply into 5 cores and 1 top state machine should be enough.
+
+And the layout of my chip looks like this:
+
+![layout of the chip design](./img/simple_floorplan_of_the_newly_design_chip.gif)
+
+
+Checked the floorplan and fixed the corner cell error, this is then followed by tons of warnings about IP block not being encampassed with halo.
+
+This will be added now.
+
+
+I have added stripes and power ring, now it has come to power rails, it is taking a while to generate.
+
+I am also wondering how these IP blocks should be connected to power and ground.
+
+Okay, there are a million dangling wires erros in the layout 💀.
+
+
+This is not looking good at all....
+
+
+Think I will stop moving forward for this design.
+
+![Scorching hot mess of the chip design think I will move forward](./img/scorching_mess_of_the_chip_design_full_of_dangling_wire.gif)
+
+
+And also I think surround the IP with a ring would be a better idea so that the IP can be powered up.
+
+I need to check the manual again to see how to hook up the IP into power.
+
+I will call it a day today.
+
+
+## 31 July 2024
+
+I realised I can probably make some partition before the whole implementation???
+
+I will try that now.
+
+I would still have millions of dangling wires even If I have added block rings.
+
+But I also noticed that the manual calls for a halo block around the IP.
+
+This has not left much room for placment and route.
+
+
+I will have to think closely how to integrate IPs into designs.
+
+Probably, I can start by having a small design with only 1 IP.
+
+
+Additionally, I need to check the placement of the example I had from the tutorial.
+
+It seems that each IP needs a halo and their own power ring.
+
+
+
+## 1 Aug 2024
+
+After observing the example from the tutorial, it can be seen that innovus did not complain about the dangling wire here.
+
+and Halo has to extend out of the power ring encompassion.
+
+So apparenlty, it has the same connectivity errors as me, it also has dangling wires, I am going to check if this will be fixed in the future.
+
+
+After cheking online, it looks like the dangling wires situation around macros are minimal issues and should not be a big problem during P&R.
+
+
+this can later be resolved during detailed routing.
+
+![final_floorplan_of_one_diagonal_BESNN](./img/Final_floorplan_of_1_diagonal_design.png)
+
+The blue part is the pre_processing module, integrate no fire module is at the top left corner and spike generation module is at the bottom.
+
+And it turns out that the bottom aread was basically not used, this makes me think that placement of macros should be around edges
+
+As for a partition, there is no def file for the scan chain, one has to manually define the scan chain using the following command:
+
+```tcl 
+create_scan_chain -name {<scan_chain_name>} -start {<starting_point>} -stop {<stopping_point>}
+```
+And of course, we have a loooooot of DRC violations after routing.
+
+![DRC violations mapped aournd the edge and tight narrow spot](./img/DRC_violations_mapped_around_the_edge_and_narrow_channel.png)
+
+
+
+## 5 Aug 2024
+
+### New project: FIFO construction
+
+The dual port RAM I have acquired is a dual port RAM, XH018 LPMOS XDPRAM_1024X8_M8P_INPUT_VALUE.
+
+This RAM has 1024 entries and is 8 bit wide.
+
+IP information:
+
++ cell name: XDPRAM_1024X8_M8P_INPUT_VALUE
++ number of words: 1024
++ number of data bits: 8
++ number of address bits: 10
+
+It has to be noted that there are 2 read/write signals (WEnA, WEnB) for both side A and B and 2 enable signals (CEnA, CEnB) for both A and B. Besides, it has another signal: OEnA/B, which is the output enable.
+
+Where write enable signal works by enable the write process when it is low, otherwise it is for read.
+
+I thought I could probably use single port ram for FIFO, but realised that I need write and read processes available simultaneously. This cannot be done with a single port RAM.
+
+There is a line of comment that says: **Keeping CEnA, CEnB high when memory is not active prevents unnecessary power consumption.**
+
+
+And in different PVT corners, the operating performance is different.
+
+At the fastest corner (1.98V, -40C), the min cycle time is 3.76 ns.
+
+While at the slowest corner (1.62V, 175C), the min cycle time is 12.02 ns
+
+
+#### ❗**Simultaneous read/write case**
+
+Reading from the same address on both ports is allowed, there will be no issue.
+
+
+Reading from one port that is being written at the same address will result in undefined read data, but the writting process will be completed successfully.
+
+
+Avoid writting to the same address at the same time, because this will result in unpredictable data.
+
+
+There is a minimum time interval between writing to one port and any other operation at the same address, called clock collision time. This value is at least 5.27 ns under PVT of 175C and 1.62V.
+
+
+
+
