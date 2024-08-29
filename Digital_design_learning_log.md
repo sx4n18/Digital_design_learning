@@ -716,5 +716,396 @@ Avoid writting to the same address at the same time, because this will result in
 There is a minimum time interval between writing to one port and any other operation at the same address, called clock collision time. This value is at least 5.27 ns under PVT of 175C and 1.62V.
 
 
+## 6 Aug 2024
 
+I can probably have a rough specification set up today for this FIFO that is built around th IP block.
+
+
+After a little research, I realised that FIFOs are categorised into synchronous and asynchronous types.
+
+Where synchronous FIFO uses same clock for both read and write process, while asynchronous FIFO uses different clocks for read and write.
+
+asynchronous FIFO design involves pointer gray code conversion, synchronisation by the other clock and revserse gray code conversion.
+
+I can implement two different versions of FIFOs and test them both given that we do not know what typs of FIFO we are using now.
+
+
+
+## 7 Aug 2024
+
+Based on the findings made yesterday, I will develop 2 separate FIFO design with both synchronous and asynchronous features.
+
+Will start the synchronous design first and save the unfinished design created yesterday as asynchronous design.
+
+
+### Synchronous FIFO design
+
+The synchronous FIFO design should have the same clock for both read and write, this means that the reading and writing should be operated at the same rate. The key signal that is controlling the gap should be the write and read enable signals. They should be active low signals.
+
+
+The design is finished, now I am trying to operate a simulation with the worst delay time option turned off.
+
+The preliminary simulation showed correct behaviours of writing information, I have not tested read information yet.
+
+But it seems the indicator flag "almost_full" is not correct.
+
+![preliminary simulation waveform of the sync FIFO](./img/Preliminary_simulation_waveform_of_sync_FIFO.png)
+
+
+I have changed the condition to calculate "almost full" and "almost empty", take "almost full" as an example.
+
+The write pointer has to be smaller than the read pointer and the gap between them has to be equal or smaller than 5.
+
+Similarly as for "almost empty", the write pointer has to be bigger than read pointer, and the gap between them has to be equal or smaller than 5.
+
+The behaviours for flag "almost empty" and "almost full" have been fixed now.
+
+![The two flags almost empty and almost full have been fixed](./img/fixed_almost_empy_full_flags_in_simulation.png)
+
+But it has to be noted that the simulation complained about the hold violation for address, which switches at every clock edge.
+
+This is because I am simulating a real IP with verilog model only.
+
+I will now try to turn the option "worst timing" on.
+
+Actually, the simulation shows the correct results, and I am assuming these can be fixed with the insertion of real gates.
+
+But it looks like we should have at least 20 ns clock cycle.
+
+
+The writing test so far has been ok.
+
+Will now carry on to the reading test.
+
+Somehow the reading takes longer than I thought it would be.
+
+There should be at least 1 clock cycle delay expected from the enable signal asserted and the actual data released.
+
+The whole reading process goes like:
+
+1 clock: assert read_enable and address read.
+2 clock: release data after access time from posedge.
+
+I have just added a wee counter to wait until the data is stable before sampling the data from the output of the RAM.
+
+Apparently, to secure the data, we should wait 2 clock cycles.
+
+Now I am simulating with the worst timing behaviours.
+
+Yes, the behaviour has been fixed, and there is no problem even with the worst timing condition.
+
+![Corrected timing behaviours of the reading process with the worst timing](./img/corrected_timing_behaviour_of_the_reading_process.png)
+
+
+## 8 Aug 2024
+
+Had a chat with Steve today to talk about the new ADC that we are going to implement in the upcoming chip.
+And it looks like he does not need my help with the digital implementation or the gray code counter implementation.
+
+I have delved deep into the simulation waveform to check why there is a big delay between the address assertion and data release.
+
+It turns out that the data was immediately released from RAM after the address was read.
+
+But it has to pass through 2 tristate buffer before it was visible at the output port QB.
+
+The first buffer basically takes a clocked enable signal to let through the data.
+
+The second buffer is our output enable, which is always tied low.
+
+Technically, there should be no delay, but the access time has been added to update the output QB only after the clock edge after the **ACCESS_TIME**.
+
+This basically explains why the data read process is a rather slow one compared to the writing transaction.
+
+
+### Asynchronous FIFO design
+
+Now that I have implemented the synchronous FIFO design. I shall move on to the asynchronous FIFO design.
+
+
+The following algorithm can be helpful
+
+```python
+    def inverse_gray32(n):
+        assert(0 <= n < 2**32) 
+        n = n ^ (n >> 1)
+        n = n ^ (n >> 2)
+        n = n ^ (n >> 4)
+        n = n ^ (n >> 8)
+        n = n ^ (n >> 16)
+        return n
+```
+
+Inverse gray coding:
+
+```python
+def inverse_gray(n):
+        x = n
+        e = 1
+        while x:
+            x = n >> e
+            e *= 2
+            n = n ^ x
+        return n
+```
+
+
+## 13 Aug 2024
+
+I will start the implementation of the asynchronous FIFO with the IP now.
+
+Thanks to the help from this [site](https://zipcpu.com/blog/2018/07/06/afifo.html) talking about FIFO building, I managed to understand the logic.
+
+I have just finished constructing the asynchronous FIFO with RAM, now I am drafting the simulation testbench. 
+
+
+Now I am simulating the module and debug the syntax (of course everyone does syntax check at simulation...)
+
+
+Did my first write simulation and found that nothing has been written into the RAM....
+
+But accidentally, data after address 6 has been successfully written in.
+
+![nothing has been written into the RAM at first 5 addresses](./img/data_not_written_into_RAM_before_address_006.png)
+
+
+After checking the simulation log.... it looks like there is a no-operation period at the first 250 ns.
+
+```text
+110.00 ns: ERROR: async_sim_test_top.inst_Async_FIFO_XDPRAM_1024X8.dual_port_RAM_IP_inst : RAM (port A) enabled during initial 250ns: RAM content UNDEFINED
+
+
+130.00 ns: ERROR: async_sim_test_top.inst_Async_FIFO_XDPRAM_1024X8.dual_port_RAM_IP_inst : RAM (port A) enabled during initial 250ns: RAM content UNDEFINED
+```
+
+Now I have extended the initialisation time, re-run simulation and start writing process after at least 300 ns.
+
+Yes, this has been fixed now, and it looks like the burst writing is also successful.
+
+Only thing that needs attention is that if write enable is longer than 1 clock cycle, the address will increment more than once.
+
+This means that if the data stays at this period, duplicate data will be written into the RAM for the next address.
+
+Now it is time to read from the FIFO...
+
+![Just like before, it needs 2 clock cycles to read](./img/read_cycle_complete_transaction.png)
+
+Maybe I am missing something, but the reading cycle always needs 2 clock cycles to finish.
+
+
+
+## 14 Aug 2024
+
+To get to the bottom of this, it might be easier to simply just simulate the IP itself.
+
+Even though most of the behaviour has been correct, but I cannot replicate the old data read before it switches to 
+
+Also, I noticed that the setup timing for the address has been a strong requirements for the RAM to function properly.
+
+During the period the side of logic is enabled, the address has to be stable for at least 5.7 ns prior to the posedge of the clock.
+
+I will head to the next step now to synthesis the design and see what trouble I will bump into.
+
+So far at the functional level, I believe the module is correct, But I should probably export a flag signal too, so that the following logic knows when to sample the data.
+
+Now a ready signal has also been added to the output of the FIFO, so that the following logic can sample at the correct timing.
+
+It will be asserted when the data is updated, and deasserted when new round of reading is started (aka. when read_enable is asserted).
+
+
+## 16 Aug 2024
+
+Today I shall have a clear look at the high seed interface design, to see what options we have and what should we take into consideration.
+
+
+### FMC (FPGA mezzanine CARD)
+
+After a bit of research, I found that FMC (FPGA mezzanine card) is a good port to input LVDS signals into FPGA.
+
+They mainly have 2 types:
+
++ LPC
++ HPC
+
+Which stands for low pin count and high pin count.
+
+LPC supports 68 user-defined single-ended signals OR 34 user-defined differential pairs.
+
+HPC provides 160 user-defined single-ended signals OR 80 user-defined differential pairs, ADDITIONALLY, it provides 10 serial transceiver pairs, and additional clocks.
+
+
+Both connectors use the same mechanical connectors, the difference lies in which signals are actually populated.
+
+However, the connector itself is basically impossible to solder ourselves...
+
+We may need to seek solutions for a general purpose connector card if we are going to use this connector.
+
+Just as I was thinking how this can be utilised, I bumped into this [board](https://www.iamelectronic.com/shop/produkt/fpga-mezzanine-card-fmc-lpc-breakout-board/) which may allow us to use the interface at a more general purpose.
+
+
+But this might be a dead end search for the pin out solution.
+
+In the meantime, I will check out for other ways to connect chip to the FPGA.
+
+
+## 20 Aug 2024
+
+Found this documents from XFAB talking about IP integration or IP black box design, which is something I should check on.
+
+
+Think this tutorial basically describes how the IP can be imported into the virtuoso environment, and mainly more used for analogue design or layout design.
+
+This can be useful in the later stage.
+
+As a matter of fact, differential signals are still widely used in digital design, for example:
+
++ HDMI
++ PCI express
++ Ethernet
++ USB 2.0/3.0
++ DisplayPort
++ LVDS
+
+
+Even though LVDS has been mentioned, I did not see many right out of the source application in digital design. It has normally been dumped to specialised chip to deal with the output.
+
+So it has to be clear that LVDS does not equal to Differential.
+
+
+## 21 Aug 2024
+
+I realised that there is a test guide or module within the IP package.
+
+Also I have just added the updated 6 metal layers technology folder for new project.
+
+Now I guess I need to checkout the test data sheet for ROM and RAM.
+
+And I have also just added the IP into the newly added library with no errors.
+
+The environment is up.
+
+Found a blogger talking about HDMI module implementation on FPGA, and the author used a module to turn single-wired signal into differential signal.
+
+```verilog
+OBUFDS OBUFDS_red  (.I(TMDS_shift_red  [0]), .O(TMDSp[2]), .OB(TMDSn[2]));
+OBUFDS OBUFDS_green(.I(TMDS_shift_green[0]), .O(TMDSp[1]), .OB(TMDSn[1]));
+OBUFDS OBUFDS_blue (.I(TMDS_shift_blue [0]), .O(TMDSp[0]), .OB(TMDSn[0]));
+OBUFDS OBUFDS_clock(.I(pixclk), .O(TMDSp_clock), .OB(TMDSn_clock));
+```
+
+The module is called **OBUFDS**, which is a single input, double output module.
+
+And apparently, according to Xilinx, this module is a differential output buffer primitive.
+
+This makes me wonder if there is such thing in the digital library I am using.
+
+Or is there such a thing in the IO?
+
+After checking the explanation on [Xilinx.com](https://docs.amd.com/r/en-US/ug1353-versal-architecture-ai-libraries/OBUFDS), I think the buffer does not change much in terms of voltage level, but only a combination of a buffer and an inverter.
+
+
+After careful reading of the document, I think this is talking about the test needed for the actual **CHIP** not the design.
+
+I am now more concerned about this tape out.
+
+
+### A look at Transition Minimised Differential Signal
+
+
+This is an algorithm that proposes to encode an 8 bit number into 10 bit so that the transitions can be minimised and yet retain a balanced digit counts of 1s and 0s.
+
+Rough steps:
+
++ Step 1: Apply XOR/XNOR logic
++ Step 2: Generate 9-bit intermediate code
++ Step 3: Final 10-bit code
++ Step 4: Differential pair transmission
+
+Example: The input byte is D: 1101_0011
+
+#### Step 1 Apply XOR/XNOR logic
+
+condition: There are more than 4 "1" ? **OR**  There are 4 "1", and D\[0\] = 0
+
+This is True for D, so the process requires XNOR logic.
+
+Q<0> = D<0> = 1
+Q<1> = Q<0> XNOR D<1> = 1 XNOR 1 = 1
+Q<2> = Q<1> XNOR D<2> = 1 XNOR 0 = 0
+Q<3> = Q<2> XNOR D<3> = 0 XNOR 0 = 1
+Q<4> = Q<3> XNOR D<4> = 1 XNOR 1 = 1
+Q<5> = Q<4> XNOR D<5> = 1 XNOR 0 = 0
+Q<6> = Q<5> XNOR D<6> = 0 XNOR 1 = 0
+Q<7> = Q<6> XNOR D<7> = 0 XNOR 1 = 0
+
+Otherwise, "XOR" logic should be used.
+
+#### Step 2 Generate 9-bit intermediate code
+
+
+Because this is "XNOR":
+
+Q<8> = 0
+
+Otherwise it should be 1
+
+
+#### Step 3: Final 10-bit code
+
+condition: if display is enabled goes ahead or display content based on control word.
+
+assume display is enabled in this case.
+
+check the number difference between 1s and 0s in Q as diff_q_m
+
+condition: disparity is 0? **OR** there are 4 "1" in Q<7:0>
+
+It is a yes for us.
+
+
+
+condition: is Q<8> 0?
+
+It is yes for us. Therefore, our final output is as follow:
+
+Q<9> = 1
+Q<8> = 0
+Q<7:0> = ~Q<7:0> = 1110_0100
+disparity = disparity - diff_q_m = 0-0 = 0
+
+
+Final output for D: 1101_0011 is 10_1110_0100
+
+
+
+Detailed algorithm can be found in the picture:
+![Detailed TMDS algorithm](./img/TMDS_algorithm.jpg)
+
+A verilog implementation can be found here:
+
+```verilog
+module TMDS_encoder(
+        input clk,
+        input [7:0] VD,  // video data (red, green or blue)
+        input [1:0] CD,  // control data
+        input VDE,  // video data enable, to choose between CD (when VDE=0) and VD (when VDE=1)
+        output reg [9:0] TMDS = 0
+);
+
+wire [3:0] Nb1s = VD[0] + VD[1] + VD[2] + VD[3] + VD[4] + VD[5] + VD[6] + VD[7];
+wire XNOR = (Nb1s>4'd4) || (Nb1s==4'd4 && VD[0]==1'b0);
+wire [8:0] q_m = {~XNOR, q_m[6:0] ^ VD[7:1] ^ {7{XNOR}}, VD[0]};
+
+reg [3:0] balance_acc = 0;
+wire [3:0] balance = q_m[0] + q_m[1] + q_m[2] + q_m[3] + q_m[4] + q_m[5] + q_m[6] + q_m[7] - 4'd4;
+wire balance_sign_eq = (balance[3] == balance_acc[3]);
+wire invert_q_m = (balance==0 || balance_acc==0) ? ~q_m[8] : balance_sign_eq;
+wire [3:0] balance_acc_inc = balance - ({q_m[8] ^ ~balance_sign_eq} & ~(balance==0 || balance_acc==0));
+wire [3:0] balance_acc_new = invert_q_m ? balance_acc-balance_acc_inc : balance_acc+balance_acc_inc;
+wire [9:0] TMDS_data = {invert_q_m, q_m[8], q_m[7:0] ^ {8{invert_q_m}}};
+wire [9:0] TMDS_code = CD[1] ? (CD[0] ? 10'b1010101011 : 10'b0101010100) : (CD[0] ? 10'b0010101011 : 10'b1101010100);
+
+always @(posedge clk) TMDS <= VDE ? TMDS_data : TMDS_code;
+always @(posedge clk) balance_acc <= VDE ? balance_acc_new : 4'h0;
+endmodule
+```
 
